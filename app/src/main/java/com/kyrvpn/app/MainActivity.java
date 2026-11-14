@@ -19,7 +19,10 @@ import com.wireguard.android.backend.Tunnel;
 import com.wireguard.config.Config;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -37,8 +40,10 @@ public class MainActivity extends Activity {
     private final Tunnel tunnel = new Tunnel() {
         @Override public String getName() { return "KyrVPN"; }
         @Override public void onStateChange(State newState) {
-            runOnUiThread(() -> status.setText(
-                    newState == State.UP ? "Туннель включён" : "Туннель выключен"));
+            runOnUiThread(() -> {
+                if (status != null) status.setText(
+                    newState == State.UP ? "WireGuard-туннель включён" : "Туннель выключен");
+            });
         }
     };
 
@@ -50,8 +55,8 @@ public class MainActivity extends Activity {
         String saved = getSharedPreferences(PREFS, MODE_PRIVATE).getString(CONFIG_KEY, "");
         configInput.setText(saved);
         status.setText(saved.isEmpty()
-                ? "Добавьте конфигурацию WireGuard"
-                : "Конфигурация сохранена. Можно подключаться.");
+            ? "Добавьте конфигурацию WireGuard"
+            : "Конфигурация сохранена. Можно подключаться.");
     }
 
     private void buildScreen() {
@@ -77,7 +82,7 @@ public class MainActivity extends Activity {
         root.addView(status, matchWrap());
 
         TextView hint = new TextView(this);
-        hint.setText("Вставьте конфигурацию WireGuard (.conf). Приватный ключ хранится только на этом телефоне.");
+        hint.setText("Импортируйте конфигурацию WireGuard (.conf). Приватный ключ хранится в памяти приложения на телефоне.");
         hint.setTextColor(Color.LTGRAY);
         hint.setTextSize(14);
         root.addView(hint, matchWrap());
@@ -85,14 +90,14 @@ public class MainActivity extends Activity {
         configInput = new EditText(this);
         configInput.setTextColor(Color.WHITE);
         configInput.setHintTextColor(Color.GRAY);
-        configInput.setHint("[Interface]\nPrivateKey = ...\nAddress = ...\n\n[Peer]\nPublicKey = ...\nEndpoint = ...");
+        configInput.setHint("[Interface]\\nPrivateKey = ...\\nAddress = ...\\n\\n[Peer]\\nPublicKey = ...\\nEndpoint = ...");
         configInput.setGravity(Gravity.TOP | Gravity.START);
         configInput.setTextSize(13);
         configInput.setMinLines(8);
         configInput.setPadding(14, 14, 14, 14);
         configInput.setBackgroundColor(Color.rgb(34, 38, 50));
         root.addView(configInput, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(240)));
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(240)));
 
         Button importButton = button("ИМПОРТИРОВАТЬ .CONF");
         importButton.setOnClickListener(v -> {
@@ -128,13 +133,17 @@ public class MainActivity extends Activity {
 
     private LinearLayout.LayoutParams matchWrap() {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         p.bottomMargin = dp(12);
         return p;
     }
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private Config parseConfig(String value) throws Exception {
+        return Config.parse(new BufferedReader(new StringReader(value)));
     }
 
     private void saveConfig() {
@@ -144,9 +153,9 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            Config.parse(new BufferedReader(new StringReader(value)));
+            parseConfig(value);
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(CONFIG_KEY, value).apply();
-            status.setText("Конфигурация проверена и сохранена на телефоне");
+            status.setText("Конфигурация проверена и сохранена");
             Toast.makeText(this, "Конфигурация сохранена", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             Toast.makeText(this, "Ошибка конфигурации: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -160,7 +169,7 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            Config.parse(new BufferedReader(new StringReader(value)));
+            parseConfig(value);
         } catch (Exception e) {
             Toast.makeText(this, "Неверная конфигурация: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return;
@@ -178,9 +187,9 @@ public class MainActivity extends Activity {
         status.setText("Подключаем WireGuard…");
         executor.execute(() -> {
             try {
-                Config config = Config.parse(new BufferedReader(new StringReader(value)));
+                Config config = parseConfig(value);
                 backend.setState(tunnel, Tunnel.State.UP, config);
-                runOnUiThread(() -> status.setText("Туннель WireGuard включён. Проверяйте доступ к интернету."));
+                runOnUiThread(() -> status.setText("WireGuard запущен. Проверяется связь с сервером."));
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     status.setText("Не удалось подключиться: " + e.getMessage());
@@ -205,21 +214,27 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null) return;
 
         if (requestCode == VPN_PERMISSION_REQUEST) {
-            String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(CONFIG_KEY, "");
-            if (value.isEmpty()) {
-                status.setText("Сначала добавьте конфигурацию");
+            if (resultCode == RESULT_OK) {
+                String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(CONFIG_KEY, "");
+                if (value.isEmpty()) status.setText("Сначала добавьте конфигурацию");
+                else connectWithConfig(value);
             } else {
-                connectWithConfig(value);
+                status.setText("Разрешение VPN не предоставлено");
             }
-        } else if (requestCode == CONFIG_FILE_REQUEST) {
-            try (java.io.InputStream in = getContentResolver().openInputStream(data.getData())) {
+            return;
+        }
+
+        if (requestCode == CONFIG_FILE_REQUEST && resultCode == RESULT_OK && data != null
+                && data.getData() != null) {
+            try (InputStream in = getContentResolver().openInputStream(data.getData());
+                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 if (in == null) throw new IllegalStateException("Не удалось открыть файл");
-                byte[] bytes = new byte[in.available()];
-                int read = in.read(bytes);
-                String value = new String(bytes, 0, Math.max(0, read), java.nio.charset.StandardCharsets.UTF_8);
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+                String value = new String(out.toByteArray(), StandardCharsets.UTF_8);
                 configInput.setText(value);
                 saveConfig();
             } catch (Exception e) {
@@ -231,6 +246,5 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // Keep the executor alive until an in-flight tunnel operation completes.
     }
 }
