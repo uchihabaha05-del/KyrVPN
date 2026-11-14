@@ -35,6 +35,7 @@ public class MainActivity extends Activity {
     private EditText configInput;
     private TextView status;
     private GoBackend backend;
+    private String pendingConfig = "";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     private final Tunnel tunnel = new Tunnel() {
@@ -52,11 +53,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         backend = new GoBackend(getApplicationContext());
         buildScreen();
-        String saved = getSharedPreferences(PREFS, MODE_PRIVATE).getString(CONFIG_KEY, "");
-        configInput.setText(saved);
-        status.setText(saved.isEmpty()
-            ? "Добавьте конфигурацию WireGuard"
-            : "Конфигурация сохранена. Можно подключаться.");
+        status.setText("Добавьте конфигурацию WireGuard");
     }
 
     private void buildScreen() {
@@ -82,7 +79,7 @@ public class MainActivity extends Activity {
         root.addView(status, matchWrap());
 
         TextView hint = new TextView(this);
-        hint.setText("Импортируйте конфигурацию WireGuard (.conf). Приватный ключ хранится в памяти приложения на телефоне.");
+        hint.setText("Импортируйте конфигурацию WireGuard (.conf). Конфигурация с приватным ключом не отправляется на сервер и не сохраняется в файлах приложения.");
         hint.setTextColor(Color.LTGRAY);
         hint.setTextSize(14);
         root.addView(hint, matchWrap());
@@ -154,9 +151,9 @@ public class MainActivity extends Activity {
         }
         try {
             parseConfig(value);
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(CONFIG_KEY, value).apply();
-            status.setText("Конфигурация проверена и сохранена");
-            Toast.makeText(this, "Конфигурация сохранена", Toast.LENGTH_SHORT).show();
+            pendingConfig = value;
+            status.setText("Конфигурация проверена. Можно подключаться.");
+            Toast.makeText(this, "Конфигурация проверена", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             Toast.makeText(this, "Ошибка конфигурации: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -174,7 +171,7 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Неверная конфигурация: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(CONFIG_KEY, value).apply();
+        pendingConfig = value;
         Intent permissionIntent = VpnService.prepare(this);
         if (permissionIntent != null) {
             startActivityForResult(permissionIntent, VPN_PERMISSION_REQUEST);
@@ -217,9 +214,8 @@ public class MainActivity extends Activity {
 
         if (requestCode == VPN_PERMISSION_REQUEST) {
             if (resultCode == RESULT_OK) {
-                String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(CONFIG_KEY, "");
-                if (value.isEmpty()) status.setText("Сначала добавьте конфигурацию");
-                else connectWithConfig(value);
+                if (pendingConfig.isEmpty()) status.setText("Сначала добавьте конфигурацию");
+                else connectWithConfig(pendingConfig);
             } else {
                 status.setText("Разрешение VPN не предоставлено");
             }
