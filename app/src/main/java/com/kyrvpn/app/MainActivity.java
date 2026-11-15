@@ -221,7 +221,7 @@ public class MainActivity extends Activity {
         addSpace(serverInfo, 4);
         serverInfo.addView(text("92.242.190.191  ·  UDP 13751", 11, MUTED, false));
         serverCard.addView(serverInfo, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView serverState = text("READY", 9, Color.rgb(255, 202, 131), true);
+        TextView serverState = text("НАСТРОЙКА", 9, Color.rgb(255, 202, 131), true);
         serverState.setPadding(dp(9), dp(7), dp(9), dp(7));
         serverState.setBackground(pill(Color.rgb(67, 49, 34), Color.TRANSPARENT));
         serverCard.addView(serverState);
