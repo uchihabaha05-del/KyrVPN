@@ -17,6 +17,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.animation.AlphaAnimation;
+import android.view.animation.Animation;
 
 import com.wireguard.android.backend.GoBackend;
 import com.wireguard.android.backend.Tunnel;
@@ -43,6 +45,10 @@ public class MainActivity extends Activity {
     private TextView status;
     private TextView statusBadge;
     private TextView configToggle;
+    private TextView connectButton;
+    private boolean tunnelUp = false;
+    private boolean connecting = false;
+    private Animation pulseAnimation;
     private GoBackend backend;
     private String pendingConfig = "";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -51,18 +57,15 @@ public class MainActivity extends Activity {
         @Override public String getName() { return "KyrVPN"; }
         @Override public void onStateChange(State newState) {
             runOnUiThread(() -> {
+                tunnelUp = newState == State.UP;
+                connecting = false;
                 if (status != null) {
-                    status.setText(newState == State.UP
-                        ? "Туннель WireGuard активен"
-                        : "Туннель выключен");
+                    status.setText(tunnelUp ? "Туннель WireGuard включён" : "Туннель выключен");
                 }
-                setBadge(newState == State.UP ? "АКТИВЕН" : "ВЫКЛЮЧЕН",
-                    newState == State.UP
-                        ? Color.rgb(38, 91, 75)
-                        : Color.rgb(66, 31, 50),
-                    newState == State.UP
-                        ? Color.rgb(133, 255, 205)
-                        : Color.rgb(255, 157, 171));
+                setBadge(tunnelUp ? "ВКЛЮЧЁН" : "ВЫКЛЮЧЕН",
+                    tunnelUp ? Color.rgb(25, 75, 65) : Color.rgb(66, 31, 50),
+                    tunnelUp ? Color.rgb(133, 255, 205) : Color.rgb(255, 157, 171));
+                updateConnectButton();
             });
         }
     };
@@ -175,24 +178,24 @@ public class MainActivity extends Activity {
 
         addSpace(page, 17);
 
-        TextView connect = text("ПОДКЛЮЧИТЬСЯ", 14, WHITE, true);
-        connect.setGravity(Gravity.CENTER);
-        connect.setLetterSpacing(0.08f);
-        connect.setBackground(gradient(
-            new int[]{Color.rgb(89, 75, 220), Color.rgb(139, 74, 235)}, dp(18)));
-        connect.setElevation(dp(5));
-        connect.setPadding(dp(16), dp(18), dp(16), dp(18));
-        page.addView(connect, new LinearLayout.LayoutParams(-1, dp(58)));
-        connect.setOnClickListener(v -> requestAndConnect());
-
-        addSpace(page, 10);
-        TextView disconnect = text("ОТКЛЮЧИТЬ VPN", 12, Color.rgb(209, 199, 255), true);
-        disconnect.setGravity(Gravity.CENTER);
-        disconnect.setBackground(roundRect(Color.rgb(27, 27, 50), dp(16),
-            Color.rgb(79, 67, 126), dp(1)));
-        disconnect.setPadding(dp(16), dp(15), dp(16), dp(15));
-        page.addView(disconnect, new LinearLayout.LayoutParams(-1, dp(50)));
-        disconnect.setOnClickListener(v -> disconnect());
+        // One large circular connect/disconnect control
+        LinearLayout connectArea = new LinearLayout(this);
+        connectArea.setGravity(Gravity.CENTER);
+        connectArea.setOrientation(LinearLayout.VERTICAL);
+        connectButton = text("⏻\nПОДКЛЮЧИТЬ", 17, WHITE, true);
+        connectButton.setGravity(Gravity.CENTER);
+        connectButton.setLineSpacing(dp(5), 1f);
+        connectButton.setBackground(circleGradient(new int[]{
+            Color.rgb(91, 75, 226), Color.rgb(144, 71, 239)}));
+        connectButton.setElevation(dp(18));
+        connectArea.addView(connectButton, new LinearLayout.LayoutParams(dp(218), dp(218)));
+        page.addView(connectArea, new LinearLayout.LayoutParams(-1, dp(238)));
+        connectButton.setOnClickListener(v -> {
+            if (connecting) return;
+            if (tunnelUp) disconnect();
+            else requestAndConnect();
+        });
+        updateConnectButton();
 
         addSpace(page, 26);
 
@@ -272,19 +275,45 @@ public class MainActivity extends Activity {
             configToggle.setText(show ? "Скрыть ручной ввод  ▴" : "Вставить конфигурацию вручную  ▾");
         });
 
-        addSpace(page, 8);
-        TextView save = text("ПРОВЕРИТЬ КОНФИГУРАЦИЮ", 11,
-            Color.rgb(210, 199, 255), true);
-        save.setGravity(Gravity.CENTER);
-        save.setBackground(roundRect(Color.rgb(39, 34, 68), dp(14),
-            Color.rgb(82, 67, 131), dp(1)));
-        save.setPadding(dp(12), dp(13), dp(12), dp(13));
-        page.addView(save, new LinearLayout.LayoutParams(-1, dp(46)));
-        save.setOnClickListener(v -> saveConfig());
-
         addSpace(page, 18);
         TextView note = text("🔒  Конфигурация WireGuard обрабатывается на устройстве.", 11, MUTED, false);
         page.addView(note);
+    }
+
+    private GradientDrawable circleGradient(int[] colors) {
+        GradientDrawable d = new GradientDrawable(GradientDrawable.Orientation.TL_BR, colors);
+        d.setShape(GradientDrawable.OVAL);
+        d.setStroke(dp(2), Color.rgb(180, 155, 255));
+        return d;
+    }
+
+    private void updateConnectButton() {
+        if (connectButton == null) return;
+        if (pulseAnimation != null) {
+            connectButton.clearAnimation();
+            pulseAnimation = null;
+        }
+        if (connecting) {
+            connectButton.setText("◌\nПОДКЛЮЧЕНИЕ…");
+            connectButton.setBackground(circleGradient(new int[]{
+                Color.rgb(112, 76, 225), Color.rgb(174, 74, 235)}));
+            AlphaAnimation pulse = new AlphaAnimation(0.62f, 1f);
+            pulse.setDuration(750);
+            pulse.setRepeatMode(Animation.REVERSE);
+            pulse.setRepeatCount(Animation.INFINITE);
+            connectButton.startAnimation(pulse);
+            pulseAnimation = pulse;
+        } else if (tunnelUp) {
+            connectButton.setText("⏻\nОТКЛЮЧИТЬ");
+            connectButton.setBackground(circleGradient(new int[]{
+                Color.rgb(24, 126, 100), Color.rgb(42, 180, 137)}));
+            connectButton.setAlpha(1f);
+        } else {
+            connectButton.setText("⏻\nПОДКЛЮЧИТЬ");
+            connectButton.setBackground(circleGradient(new int[]{
+                Color.rgb(91, 75, 226), Color.rgb(144, 71, 239)}));
+            connectButton.setAlpha(1f);
+        }
     }
 
     private void setBadge(String label, int background, int foreground) {
@@ -384,20 +413,28 @@ public class MainActivity extends Activity {
     }
 
     private void connectWithConfig(String value) {
-        status.setText("Подключаем WireGuard…");
+        connecting = true;
+        updateConnectButton();
+        status.setText("Ожидаем подключение WireGuard…");
         setBadge("ПОДКЛЮЧЕНИЕ", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
         executor.execute(() -> {
             try {
                 Config config = parseConfig(value);
                 backend.setState(tunnel, Tunnel.State.UP, config);
                 runOnUiThread(() -> {
-                    status.setText("Туннель WireGuard активен");
-                    setBadge("АКТИВЕН", Color.rgb(38, 91, 75), Color.rgb(133, 255, 205));
+                    tunnelUp = true;
+                    connecting = false;
+                    status.setText("Туннель WireGuard включён");
+                    setBadge("ВКЛЮЧЁН", Color.rgb(38, 91, 75), Color.rgb(133, 255, 205));
+                    updateConnectButton();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
+                    connecting = false;
+                    tunnelUp = false;
                     status.setText("Не удалось подключиться: " + e.getMessage());
                     setBadge("ОШИБКА", Color.rgb(75, 37, 45), Color.rgb(255, 157, 171));
+                    updateConnectButton();
                     Toast.makeText(this, "Ошибка WireGuard: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
             }
@@ -405,16 +442,25 @@ public class MainActivity extends Activity {
     }
 
     private void disconnect() {
+        connecting = true;
         status.setText("Отключаем…");
+        updateConnectButton();
         executor.execute(() -> {
             try {
                 backend.setState(tunnel, Tunnel.State.DOWN, null);
                 runOnUiThread(() -> {
+                    tunnelUp = false;
+                    connecting = false;
                     status.setText("Туннель выключен");
                     setBadge("ВЫКЛЮЧЕН", Color.rgb(66, 31, 50), Color.rgb(255, 157, 171));
+                    updateConnectButton();
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> status.setText("Ошибка отключения: " + e.getMessage()));
+                runOnUiThread(() -> {
+                    connecting = false;
+                    status.setText("Ошибка отключения: " + e.getMessage());
+                    updateConnectButton();
+                });
             }
         });
     }
