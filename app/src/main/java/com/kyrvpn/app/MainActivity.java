@@ -2,11 +2,13 @@ package com.kyrvpn.app;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.VpnService;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Base64;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -34,6 +36,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -61,6 +72,8 @@ public class MainActivity extends Activity {
     private Runnable handshakeCheck;
     private long connectionStartedAt;
     private static final long HANDSHAKE_TIMEOUT_MS = 25000L;
+    private static final String CONFIG_KEY_ALIAS = "kyrvpn_config_aes";
+    private static final String CONFIG_PREFS = "kyrvpn_secure_config";
 
     private final Tunnel tunnel = new Tunnel() {
         @Override public String getName() { return "KyrVPN"; }
@@ -88,8 +101,16 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(0);
         backend = new GoBackend(getApplicationContext());
         buildScreen();
-        status.setText("Добавьте конфигурацию WireGuard");
-        setBadge("ОЖИДАЕТ", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
+        String savedConfig = loadEncryptedConfig();
+        if (!savedConfig.isEmpty()) {
+            pendingConfig = savedConfig;
+            configInput.setText(savedConfig);
+            status.setText("Защищённая конфигурация сохранена на устройстве");
+            setBadge("ГОТОВО", Color.rgb(38, 65, 83), Color.rgb(145, 211, 255));
+        } else {
+            status.setText("Добавьте конфигурацию WireGuard");
+            setBadge("ОЖИДАЕТ", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
+        }
     }
 
     private void buildScreen() {
@@ -383,6 +404,58 @@ public class MainActivity extends Activity {
         return Config.parse(new BufferedReader(new StringReader(value)));
     }
 
+    private SecretKey getOrCreateConfigKey() throws Exception {
+        KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+        keyStore.load(null);
+        if (keyStore.containsAlias(CONFIG_KEY_ALIAS)) {
+            KeyStore.SecretKeyEntry entry = (KeyStore.SecretKeyEntry)
+                keyStore.getEntry(CONFIG_KEY_ALIAS, null);
+            return entry.getSecretKey();
+        }
+        KeyGenerator generator = KeyGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(CONFIG_KEY_ALIAS,
+            KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setRandomizedEncryptionRequired(true)
+            .build());
+        return generator.generateKey();
+    }
+
+    private void storeEncryptedConfig(String value) {
+        try {
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateConfigKey());
+            byte[] iv = cipher.getIV();
+            byte[] encrypted = cipher.doFinal(value.getBytes(StandardCharsets.UTF_8));
+            String stored = Base64.encodeToString(iv, Base64.NO_WRAP) + ":"
+                + Base64.encodeToString(encrypted, Base64.NO_WRAP);
+            getSharedPreferences(CONFIG_PREFS, MODE_PRIVATE).edit()
+                .putString("config", stored).apply();
+        } catch (Exception e) {
+            Toast.makeText(this, "Не удалось безопасно сохранить конфигурацию", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private String loadEncryptedConfig() {
+        String stored = getSharedPreferences(CONFIG_PREFS, MODE_PRIVATE)
+            .getString("config", "");
+        if (stored == null || stored.isEmpty()) return "";
+        try {
+            String[] parts = stored.split(":", 2);
+            if (parts.length != 2) throw new IllegalStateException("Повреждённая конфигурация");
+            byte[] iv = Base64.decode(parts[0], Base64.NO_WRAP);
+            byte[] encrypted = Base64.decode(parts[1], Base64.NO_WRAP);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateConfigKey(), new GCMParameterSpec(128, iv));
+            return new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            getSharedPreferences(CONFIG_PREFS, MODE_PRIVATE).edit().remove("config").apply();
+            return "";
+        }
+    }
+
     private void saveConfig() {
         String value = configInput.getText().toString().trim();
         if (value.isEmpty()) {
@@ -392,7 +465,8 @@ public class MainActivity extends Activity {
         try {
             parseConfig(value);
             pendingConfig = value;
-            status.setText("Конфигурация проверена. Можно подключаться.");
+            storeEncryptedConfig(value);
+            status.setText("Конфигурация проверена и сохранена защищённо на устройстве.");
             setBadge("ГОТОВО", Color.rgb(38, 65, 83), Color.rgb(145, 211, 255));
             Toast.makeText(this, "Конфигурация WireGuard проверена", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
@@ -414,6 +488,7 @@ public class MainActivity extends Activity {
             return;
         }
         pendingConfig = value;
+        storeEncryptedConfig(value);
         connecting = true;
         status.setText("Ожидаем разрешение и подключение…");
         setBadge("ОЖИДАНИЕ", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
