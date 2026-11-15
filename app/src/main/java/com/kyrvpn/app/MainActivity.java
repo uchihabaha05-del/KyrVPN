@@ -4,6 +4,9 @@ import android.app.Activity;
 import android.content.Intent;
 import android.net.VpnService;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -21,7 +24,9 @@ import android.view.animation.AlphaAnimation;
 import android.view.animation.Animation;
 
 import com.wireguard.android.backend.GoBackend;
+import com.wireguard.android.backend.Statistics;
 import com.wireguard.android.backend.Tunnel;
+import com.wireguard.crypto.Key;
 import com.wireguard.config.Config;
 
 import java.io.BufferedReader;
@@ -52,19 +57,24 @@ public class MainActivity extends Activity {
     private GoBackend backend;
     private String pendingConfig = "";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Runnable handshakeCheck;
+    private long connectionStartedAt;
+    private static final long HANDSHAKE_TIMEOUT_MS = 25000L;
 
     private final Tunnel tunnel = new Tunnel() {
         @Override public String getName() { return "KyrVPN"; }
         @Override public void onStateChange(State newState) {
             runOnUiThread(() -> {
                 tunnelUp = newState == State.UP;
-                connecting = false;
-                if (status != null) {
-                    status.setText(tunnelUp ? "Туннель WireGuard включён" : "Туннель выключен");
+                if (!tunnelUp) {
+                    connecting = false;
+                    if (handshakeCheck != null) mainHandler.removeCallbacks(handshakeCheck);
+                    if (status != null) status.setText("Туннель выключен");
+                    setBadge("ВЫКЛЮЧЕН", Color.rgb(66, 31, 50), Color.rgb(255, 157, 171));
+                } else if (!connecting && status != null) {
+                    status.setText("Туннель включён, проверяем связь с сервером");
                 }
-                setBadge(tunnelUp ? "ВКЛЮЧЁН" : "ВЫКЛЮЧЕН",
-                    tunnelUp ? Color.rgb(25, 75, 65) : Color.rgb(66, 31, 50),
-                    tunnelUp ? Color.rgb(133, 255, 205) : Color.rgb(255, 157, 171));
                 updateConnectButton();
             });
         }
@@ -424,13 +434,17 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 Config config = parseConfig(value);
-                backend.setState(tunnel, Tunnel.State.UP, config);
+                Tunnel.State state = backend.setState(tunnel, Tunnel.State.UP, config);
+                if (state != Tunnel.State.UP || backend.getState(tunnel) != Tunnel.State.UP) {
+                    throw new IllegalStateException("Android не подтвердил запуск VPN-туннеля");
+                }
                 runOnUiThread(() -> {
                     tunnelUp = true;
-                    connecting = false;
-                    status.setText("Туннель WireGuard включён");
-                    setBadge("ВКЛЮЧЁН", Color.rgb(38, 91, 75), Color.rgb(133, 255, 205));
+                    connecting = true;
+                    status.setText("Туннель включён. Проверяем handshake с сервером…");
+                    setBadge("ПРОВЕРКА СЕРВЕРА", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
                     updateConnectButton();
+                    startHandshakeCheck();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -445,7 +459,49 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void startHandshakeCheck() {
+        if (handshakeCheck != null) mainHandler.removeCallbacks(handshakeCheck);
+        connectionStartedAt = SystemClock.elapsedRealtime();
+        handshakeCheck = new Runnable() {
+            @Override public void run() {
+                if (!tunnelUp) return;
+                executor.execute(() -> {
+                    boolean handshakeFound = false;
+                    try {
+                        Statistics statistics = backend.getStatistics(tunnel);
+                        for (Key peer : statistics.peers()) {
+                            Statistics.PeerStats peerStats = statistics.peer(peer);
+                            if (peerStats != null && peerStats.latestHandshakeEpochMillis() > 0) {
+                                handshakeFound = true;
+                                break;
+                            }
+                        }
+                    } catch (Exception ignored) { }
+                    final boolean connectedToServer = handshakeFound;
+                    runOnUiThread(() -> {
+                        if (!tunnelUp) return;
+                        if (connectedToServer) {
+                            connecting = false;
+                            status.setText("Защищённое соединение с сервером установлено");
+                            setBadge("СЕРВЕР НА СВЯЗИ", Color.rgb(25, 75, 65), Color.rgb(133, 255, 205));
+                            updateConnectButton();
+                        } else if (SystemClock.elapsedRealtime() - connectionStartedAt >= HANDSHAKE_TIMEOUT_MS) {
+                            connecting = false;
+                            status.setText("Туннель включён, но сервер не ответил. Проверьте ключи, Endpoint и UDP-порт.");
+                            setBadge("НЕТ HANDSHAKE", Color.rgb(75, 37, 45), Color.rgb(255, 157, 171));
+                            updateConnectButton();
+                        } else {
+                            mainHandler.postDelayed(this, 1000L);
+                        }
+                    });
+                });
+            }
+        };
+        mainHandler.post(handshakeCheck);
+    }
+
     private void disconnect() {
+        if (handshakeCheck != null) mainHandler.removeCallbacks(handshakeCheck);
         connecting = true;
         status.setText("Отключаем…");
         updateConnectButton();
@@ -481,8 +537,10 @@ public class MainActivity extends Activity {
                     updateConnectButton();
                 } else connectWithConfig(pendingConfig);
             } else {
+                connecting = false;
                 status.setText("Разрешение VPN не предоставлено");
                 setBadge("НЕТ ДОСТУПА", Color.rgb(66, 31, 50), Color.rgb(255, 157, 171));
+                updateConnectButton();
             }
             return;
         }
@@ -508,6 +566,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (handshakeCheck != null) mainHandler.removeCallbacks(handshakeCheck);
         executor.shutdown();
         super.onDestroy();
     }
