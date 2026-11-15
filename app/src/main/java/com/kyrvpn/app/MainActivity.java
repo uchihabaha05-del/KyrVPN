@@ -1,6 +1,7 @@
 package com.kyrvpn.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.VpnService;
@@ -16,6 +17,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
+import android.text.InputType;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -108,8 +110,9 @@ public class MainActivity extends Activity {
             status.setText("Защищённая конфигурация сохранена на устройстве");
             setBadge("ГОТОВО", Color.rgb(38, 65, 83), Color.rgb(145, 211, 255));
         } else {
-            status.setText("Добавьте конфигурацию WireGuard");
-            setBadge("ОЖИДАЕТ", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
+            status.setText("Нужен существующий ключ WireGuard");
+            setBadge("НУЖЕН КЛЮЧ", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
+            mainHandler.post(this::showPrivateKeyDialog);
         }
     }
 
@@ -261,53 +264,9 @@ public class MainActivity extends Activity {
         serverCard.addView(serverState);
         page.addView(serverCard);
 
-        addSpace(page, 24);
-        LinearLayout configHeader = new LinearLayout(this);
-        configHeader.setGravity(Gravity.CENTER_VERTICAL);
-        configHeader.addView(text("КОНФИГУРАЦИЯ", 11, MUTED, true),
-            new LinearLayout.LayoutParams(0, -2, 1));
-        page.addView(configHeader);
-        addSpace(page, 8);
-
-        TextView importButton = text("＋  ИМПОРТИРОВАТЬ ФАЙЛ .CONF", 12, WHITE, true);
-        importButton.setGravity(Gravity.CENTER);
-        importButton.setBackground(roundRect(Color.rgb(31, 34, 58), dp(15),
-            Color.rgb(66, 72, 112), dp(1)));
-        importButton.setPadding(dp(14), dp(15), dp(14), dp(15));
-        page.addView(importButton, new LinearLayout.LayoutParams(-1, dp(50)));
-        importButton.setOnClickListener(v -> {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("*/*");
-            startActivityForResult(intent, CONFIG_FILE_REQUEST);
-        });
-
-        addSpace(page, 8);
-        configToggle = text("Вставить конфигурацию вручную  ▾", 12,
-            Color.rgb(187, 173, 255), true);
-        configToggle.setPadding(dp(4), dp(9), dp(4), dp(9));
-        page.addView(configToggle);
         configInput = new EditText(this);
-        configInput.setTextColor(WHITE);
-        configInput.setHintTextColor(Color.rgb(111, 119, 148));
-        configInput.setHint("[Interface]\nPrivateKey = ...\nAddress = ...\n\n[Peer]\nPublicKey = ...\nEndpoint = ...");
-        configInput.setGravity(Gravity.TOP | Gravity.START);
-        configInput.setTextSize(12);
-        configInput.setMinLines(7);
-        configInput.setPadding(dp(13), dp(13), dp(13), dp(13));
-        configInput.setBackground(roundRect(Color.rgb(25, 28, 47), dp(14),
-            Color.rgb(60, 64, 95), dp(1)));
         configInput.setVisibility(View.GONE);
-        page.addView(configInput, new LinearLayout.LayoutParams(-1, dp(205)));
-
-        configToggle.setOnClickListener(v -> {
-            boolean show = configInput.getVisibility() != View.VISIBLE;
-            configInput.setVisibility(show ? View.VISIBLE : View.GONE);
-            configToggle.setText(show ? "Скрыть ручной ввод  ▴" : "Вставить конфигурацию вручную  ▾");
-        });
-
-        addSpace(page, 18);
-        TextView note = text("🔒  Конфигурация WireGuard обрабатывается на устройстве.", 11, MUTED, false);
+        TextView note = text("🔒  Ключ вводится один раз и хранится на устройстве в зашифрованном виде.", 11, MUTED, false);
         page.addView(note);
     }
 
@@ -474,11 +433,66 @@ public class MainActivity extends Activity {
         }
     }
 
+
+    private void showPrivateKeyDialog() {
+        if (isFinishing() || (android.os.Build.VERSION.SDK_INT >= 17 && isDestroyed())) return;
+        EditText keyField = new EditText(this);
+        keyField.setSingleLine(true);
+        keyField.setTextSize(14);
+        keyField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        keyField.setHint("Вставь существующий приватный ключ");
+        keyField.setPadding(dp(14), dp(12), dp(14), dp(12));
+        keyField.setBackground(roundRect(Color.rgb(25, 28, 47), dp(12),
+            Color.rgb(60, 64, 95), dp(1)));
+        LinearLayout dialogContent = new LinearLayout(this);
+        dialogContent.setPadding(dp(22), dp(8), dp(22), 0);
+        dialogContent.addView(keyField, new LinearLayout.LayoutParams(-1, dp(52)));
+        new AlertDialog.Builder(this)
+            .setTitle("Настройка KyrVPN")
+            .setMessage("Введи приватный ключ, соответствующий уже зарегистрированному на сервере ключу. Он не отправляется в чат и сохраняется только на этом устройстве.")
+            .setView(dialogContent)
+            .setNegativeButton("Позже", (dialog, which) -> {
+                status.setText("Ожидается ввод существующего ключа");
+                setBadge("НУЖЕН КЛЮЧ", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
+            })
+            .setPositiveButton("Сохранить", (dialog, which) -> {
+                String privateKey = keyField.getText().toString().trim().replaceAll("\\s+", "");
+                if (privateKey.isEmpty()) {
+                    Toast.makeText(this, "Введи приватный ключ", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                String generatedConfig =
+                    "[Interface]\n" +
+                    "PrivateKey = " + privateKey + "\n" +
+                    "Address = 10.66.66.2/32\n" +
+                    "DNS = 1.1.1.1\n\n" +
+                    "[Peer]\n" +
+                    "PublicKey = 8jbM003KrMpEnKRt1vNjsqgK74u3qIfI0b15qw0sVlk=\n" +
+                    "AllowedIPs = 0.0.0.0/0\n" +
+                    "Endpoint = 92.242.190.191:13751\n" +
+                    "PersistentKeepalive = 25\n";
+                try {
+                    parseConfig(generatedConfig);
+                    pendingConfig = generatedConfig;
+                    configInput.setText(generatedConfig);
+                    storeEncryptedConfig(generatedConfig);
+                    status.setText("Ключ сохранён защищённо. Можно подключаться.");
+                    setBadge("ГОТОВО", Color.rgb(38, 65, 83), Color.rgb(145, 211, 255));
+                    Toast.makeText(this, "Настройка завершена", Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    status.setText("Не удалось проверить ключ WireGuard");
+                    setBadge("ОШИБКА КЛЮЧА", Color.rgb(75, 37, 45), Color.rgb(255, 157, 171));
+                    Toast.makeText(this, "Проверь приватный ключ WireGuard", Toast.LENGTH_LONG).show();
+                }
+            })
+            .show();
+    }
+
     private void requestAndConnect() {
         String value = configInput.getText().toString().trim();
         if (value.isEmpty()) value = pendingConfig;
         if (value.isEmpty()) {
-            Toast.makeText(this, "Сначала импортируйте файл .conf или вставьте конфигурацию", Toast.LENGTH_LONG).show();
+            showPrivateKeyDialog();
             return;
         }
         try {
