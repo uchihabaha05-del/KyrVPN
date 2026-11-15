@@ -404,6 +404,10 @@ public class MainActivity extends Activity {
             return;
         }
         pendingConfig = value;
+        connecting = true;
+        status.setText("Ожидаем разрешение и подключение…");
+        setBadge("ОЖИДАНИЕ", Color.rgb(55, 48, 81), Color.rgb(204, 181, 255));
+        updateConnectButton();
         Intent permissionIntent = VpnService.prepare(this);
         if (permissionIntent != null) {
             startActivityForResult(permissionIntent, VPN_PERMISSION_REQUEST);
@@ -471,8 +475,11 @@ public class MainActivity extends Activity {
 
         if (requestCode == VPN_PERMISSION_REQUEST) {
             if (resultCode == RESULT_OK) {
-                if (pendingConfig.isEmpty()) status.setText("Сначала добавьте конфигурацию");
-                else connectWithConfig(pendingConfig);
+                if (pendingConfig.isEmpty()) {
+                    connecting = false;
+                    status.setText("Сначала добавьте конфигурацию");
+                    updateConnectButton();
+                } else connectWithConfig(pendingConfig);
             } else {
                 status.setText("Разрешение VPN не предоставлено");
                 setBadge("НЕТ ДОСТУПА", Color.rgb(66, 31, 50), Color.rgb(255, 157, 171));
